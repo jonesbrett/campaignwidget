@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Airtable Lookup</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 12px; background: #f8f9fa; }
+    .widget { background: white; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); padding: 16px; }
+    h3 { margin: 0 0 12px 0; font-size: 15px; color: #1a73e8; }
+    .field { margin-bottom: 12px; }
+    .label { font-size: 13px; color: #555; margin-bottom: 4px; }
+    .value { font-size: 15px; font-weight: 600; }
+    .yes { color: #34a853; }
+    .no { color: #ea4335; }
+    .loading { color: #666; font-style: italic; }
+    .error { color: #ea4335; }
+  </style>
+</head>
+<body>
+  <div class="widget" id="widget">
+    <h3>📋 Airtable Customer Lookup</h3>
+    <div id="content">
+      <div class="loading">Waiting for preview contact...</div>
+    </div>
+  </div>
+
+  <script>
+    // ================== CONFIGURATION ==================
+    const API_ENDPOINT = 'api.airtable.com/v0/appPmucupoffk2wmY';   // ←←← CHANGE THIS
+    // If your API requires a Bearer token, add it here:
+    const BEARER_TOKEN = 'Bearer patYqdB2ZUbYN9aCP.b3a72fd1165c7d269f81e802503859e13792dbd095447b34f3c60957ecbc68e8';   // leave empty if not needed
+
+    let lastPhone = null;
+
+    // Helper: Get current DNIS (works reliably in Direct Preview)
+    function getCurrentDNIS() {
+      return window.$STORE?.agentContact?.dnis
+          || window.$STORE?.agentContact?.interaction?.dnis
+          || window.Desktop?.agentContact?.getCurrentInteraction?.()?.dnis
+          || null;
+    }
+
+    // Main lookup function
+    async function performLookup(phone) {
+      if (!phone || phone === lastPhone) return;
+      lastPhone = phone;
+
+      const contentDiv = document.getElementById('content');
+      contentDiv.innerHTML = `<div class="loading">🔍 Looking up in Airtable...</div>`;
+
+      try {
+        const payload = {
+          inputs: {
+            phoneNumber: phone
+          }
+        };
+
+        const headers = {
+          'Content-Type': 'application/json'
+        };
+        if (BEARER_TOKEN) {
+          headers['Authorization'] = `Bearer ${BEARER_TOKEN}`;
+        }
+
+        const response = await fetch(API_ENDPOINT, {
+          method: 'POST',
+          headers: headers,
+          body: JSON.stringify(payload)
+        });
+
+        if (!response.ok) throw new Error('API error');
+
+        const result = await response.json();
+
+        // Render results
+        const isToday = result.isContactedToday === true;
+        const dateDisplay = result.lastContactDate 
+          ? result.lastContactDate 
+          : '<span style="color:#999">Never contacted</span>';
+
+        contentDiv.innerHTML = `
+          <div class="field">
+            <div class="label">Last Contact Date</div>
+            <div class="value">${dateDisplay}</div>
+          </div>
+          <div class="field">
+            <div class="label">Contacted Today</div>
+            <div class="value ${isToday ? 'yes' : 'no'}">
+              ${isToday ? '✅ YES' : '❌ NO'}
+            </div>
+          </div>
+        `;
+      } catch (err) {
+        console.error(err);
+        contentDiv.innerHTML = `<div class="error">⚠️ Lookup failed. Check console.</div>`;
+      }
+    }
+
+    // Poll for interaction changes (works reliably in Auxiliary pane)
+    function startPolling() {
+      setInterval(() => {
+        const currentDNIS = getCurrentDNIS();
+        if (currentDNIS && currentDNIS !== lastPhone) {
+          performLookup(currentDNIS);
+        }
+      }, 1500); // check every 1.5 seconds
+    }
+
+    // Initialize widget
+    window.onload = function () {
+      console.log('✅ Airtable Lookup Widget loaded');
+      startPolling();
+
+      // Optional: one-time check immediately
+      const initialDNIS = getCurrentDNIS();
+      if (initialDNIS) performLookup(initialDNIS);
+    };
+  </script>
+</body>
+</html>
