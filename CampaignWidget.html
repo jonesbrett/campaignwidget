@@ -1,82 +1,277 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Campaign Lookup</title>
+/**
+ * WxCC Last Contact Date Header Widget
+ * Uses WxCC Desktop JS SDK via window.webexDesktop / agentx-js-api
+ */
+
+const template = document.createElement("template");
+template.innerHTML = `
   <style>
-    :host { display: block; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-    .widget { background: white; border-radius: 8px; padding: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); font-size: 13px; }
-    h3 { margin: 0 0 10px 0; color: #1a73e8; }
-    .field { margin-bottom: 10px; }
-    .label { font-size: 12px; color: #555; }
-    .value { font-weight: 600; }
-    .yes { color: #34a853; }
-    .no { color: #ea4335; }
-  </style>
-</head>
-<body>
-  <div class="widget">
-    <h3>📋 Campaign Lookup</h3>
-    <div id="content">Waiting for preview contact...</div>
-  </div>
-
-  <script>
-    const API_ENDPOINT = 'api.airtable.com/v0/appPmucupoffk2wmY';   // ← change this
-    const BEARER_TOKEN = 'patYqdB2ZUbYN9aCP.b3a72fd1165c7d269f81e802503859e13792dbd095447b34f3c60957ecbc68e8';
-
-    class CampaignWidget extends HTMLElement {
-      constructor() { super(); this.lastPhone = null; }
-
-      connectedCallback() {
-        console.log('✅ Campaign Lookup widget loaded in Auxiliary pane');
-        this.startPolling();
-      }
-
-      getDNIS() {
-        return window.$STORE?.agentContact?.dnis || window.$STORE?.agentContact?.interaction?.dnis || null;
-      }
-
-      async lookup(phone) {
-        if (!phone || phone === this.lastPhone) return;
-        this.lastPhone = phone;
-
-        const content = this.querySelector('#content');
-        content.innerHTML = '🔍 Looking up...';
-
-        try {
-          const res = await fetch(API_ENDPOINT, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${BEARER_TOKEN}`
-            },
-            body: JSON.stringify({ inputs: { phoneNumber: phone } })
-          });
-
-          const data = await res.json();
-
-          const isToday = data.isContactedToday === true;
-          const date = data.lastContactDate || '<span style="color:#999">Never contacted</span>';
-
-          content.innerHTML = `
-            <div class="field"><span class="label">Last Contact Date</span><br><span class="value">${date}</span></div>
-            <div class="field"><span class="label">Contacted Today</span><br><span class="value ${isToday ? 'yes' : 'no'}">${isToday ? '✅ YES' : '❌ NO'}</span></div>
-          `;
-        } catch (e) {
-          console.error(e);
-          content.innerHTML = '⚠️ Lookup failed';
-        }
-      }
-
-      startPolling() {
-        setInterval(() => {
-          const dnis = this.getDNIS();
-          if (dnis) this.lookup(dnis);
-        }, 1000);
-      }
+    :host {
+      display: inline-flex;
+      align-items: center;
+      height: 64px;
+      font-family: 'CiscoSansTT Regular', 'Helvetica Neue', Helvetica, Arial, sans-serif;
     }
+    .lc-container {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 8px;
+      padding: 6px 14px;
+      height: 36px;
+      box-sizing: border-box;
+      transition: background 0.2s ease;
+    }
+    .lc-container:hover {
+      background: rgba(255, 255, 255, 0.14);
+    }
+    .lc-container.no-call {
+      opacity: 0.4;
+    }
+    .lc-icon {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #00BCEB;
+      flex-shrink: 0;
+    }
+    .lc-icon svg {
+      width: 16px;
+      height: 16px;
+    }
+    .lc-content {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      line-height: 1.2;
+    }
+    .lc-label {
+      font-size: 9px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: rgba(255,255,255,0.5);
+      white-space: nowrap;
+    }
+    .lc-value {
+      font-size: 12px;
+      font-weight: 500;
+      color: #ffffff;
+      white-space: nowrap;
+    }
+    .lc-value.loading {
+      color: rgba(255,255,255,0.4);
+      font-style: italic;
+    }
+    .lc-value.highlight {
+      color: #00BCEB;
+    }
+  </style>
 
-    customElements.define('campaign-widget', CampaignWidget);
-  </script>
-</body>
-</html>
+  <div class="lc-container no-call" id="lc-wrapper">
+    <div class="lc-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
+        <line x1="16" y1="2" x2="16" y2="6"></line>
+        <line x1="8" y1="2" x2="8" y2="6"></line>
+        <line x1="3" y1="10" x2="21" y2="10"></line>
+      </svg>
+    </div>
+    <div class="lc-content">
+      <span class="lc-label">Last Contacted</span>
+      <span class="lc-value loading" id="lc-value">—</span>
+    </div>
+  </div>
+`;
+
+class WxccLastContactWidget extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: "open" });
+    this.shadowRoot.appendChild(template.content.cloneNode(true));
+    this._valueEl = this.shadowRoot.getElementById("lc-value");
+    this._wrapperEl = this.shadowRoot.getElementById("lc-wrapper");
+    this._subscribed = false;
+  }
+
+  connectedCallback() {
+    this._waitForSdk();
+  }
+
+  disconnectedCallback() {
+    // Clean up listeners
+    if (this._boundHandler) {
+      window.removeEventListener("agentx-js-api:task-changed", this._boundHandler);
+      window.removeEventListener("agentx-js-api:task-incoming", this._boundHandler);
+    }
+  }
+
+  _waitForSdk() {
+    const maxAttempts = 40;
+    let attempts = 0;
+
+    const poll = setInterval(() => {
+      attempts++;
+
+      // Try all known SDK entry points in WxCC
+      const sdk =
+        window["agentx-js-api"] ||
+        window.agentxJsApi ||
+        window.Desktop ||
+        window.webexDesktop;
+
+      if (sdk) {
+        clearInterval(poll);
+        console.log("[WxccLastContactWidget] SDK found:", Object.keys(sdk).join(", "));
+        this._subscribeViaSDK(sdk);
+        return;
+      }
+
+      // Fallback: listen for global WxCC custom events fired on window
+      if (attempts === 10) {
+        console.log("[WxccLastContactWidget] SDK not found yet, attaching window event listeners as fallback");
+        this._subscribeViaWindowEvents();
+      }
+
+      if (attempts >= maxAttempts) {
+        clearInterval(poll);
+        console.warn("[WxccLastContactWidget] SDK not available after max attempts. Relying on window events only.");
+      }
+    }, 500);
+  }
+
+  _subscribeViaSDK(sdk) {
+    try {
+      // WxCC JS API fires events via an 'agentContact' service
+      const agentContact = sdk.agentContact || sdk.AgentContact;
+
+      if (agentContact && typeof agentContact.addEventListener === "function") {
+        agentContact.addEventListener("eAgentContact", (detail) => {
+          console.log("[WxccLastContactWidget] eAgentContact event:", detail);
+          this._handleEvent(detail);
+        });
+        console.log("[WxccLastContactWidget] Subscribed via SDK agentContact");
+      } else {
+        console.warn("[WxccLastContactWidget] agentContact not found on SDK, falling back to window events");
+        this._subscribeViaWindowEvents();
+      }
+    } catch (err) {
+      console.error("[WxccLastContactWidget] SDK subscription error:", err);
+      this._subscribeViaWindowEvents();
+    }
+  }
+
+  _subscribeViaWindowEvents() {
+    if (this._subscribed) return;
+    this._subscribed = true;
+
+    // WxCC dispatches these custom events on the window object
+    const events = [
+      "agentContact:offered",
+      "agentContact:assigned",
+      "agentContact:ended",
+      "agentContact:wrapup",
+      "AgentContactOffered",
+      "AgentContactAssigned",
+      "eAgentContact",
+    ];
+
+    this._boundHandler = (e) => {
+      console.log("[WxccLastContactWidget] Window event:", e.type, e.detail);
+      this._handleEvent(e.detail || e);
+    };
+
+    events.forEach((evt) => {
+      window.addEventListener(evt, this._boundHandler);
+    });
+
+    // Also observe postMessage events from the AgentX iframe
+    window.addEventListener("message", (e) => {
+      if (e.data && e.data.type && e.data.type.toLowerCase().includes("agentcontact")) {
+        console.log("[WxccLastContactWidget] postMessage event:", e.data);
+        this._handleEvent(e.data);
+      }
+    });
+
+    console.log("[WxccLastContactWidget] Window event listeners attached");
+  }
+
+  _handleEvent(data) {
+    if (!data) return;
+
+    const type = data.type || data.eventType || "";
+    const interaction = data.interaction || data.data?.interaction || data;
+
+    if (
+      type.toLowerCase().includes("offered") ||
+      type.toLowerCase().includes("assigned") ||
+      type.toLowerCase().includes("ringing")
+    ) {
+      this._extractAndDisplay(interaction);
+    } else if (
+      type.toLowerCase().includes("ended") ||
+      type.toLowerCase().includes("wrapup") ||
+      type.toLowerCase().includes("wrapped")
+    ) {
+      this._clearDisplay();
+    } else {
+      // Unknown event type — try to extract anyway in case it has CAD data
+      this._extractAndDisplay(interaction);
+    }
+  }
+
+  _extractAndDisplay(interaction) {
+    if (!interaction) return;
+
+    const cad = interaction.callAssociatedData || interaction.CAD || {};
+    console.log("[WxccLastContactWidget] CAD data:", JSON.stringify(cad));
+
+    const raw =
+      cad["lastContactDate"]?.value ||
+      cad["LastContactDate"]?.value ||
+      cad["last_contact_date"]?.value ||
+      null;
+
+    console.log("[WxccLastContactWidget] lastContactDate value:", raw);
+
+    if (raw) {
+      this._setDate(raw);
+    } else {
+      this._setNoData();
+    }
+  }
+
+  _setDate(raw) {
+    let display = raw;
+    try {
+      const d = new Date(raw);
+      if (!isNaN(d.getTime())) {
+        display = d.toLocaleDateString("en-GB", {
+          day: "2-digit",
+          month: "short",
+          year: "numeric",
+        });
+      }
+    } catch (_) {}
+
+    this._valueEl.textContent = display;
+    this._valueEl.className = "lc-value highlight";
+    this._wrapperEl.classList.remove("no-call");
+  }
+
+  _setNoData() {
+    this._valueEl.textContent = "No data";
+    this._valueEl.className = "lc-value loading";
+    this._wrapperEl.classList.remove("no-call");
+  }
+
+  _clearDisplay() {
+    this._valueEl.textContent = "—";
+    this._valueEl.className = "lc-value loading";
+    this._wrapperEl.classList.add("no-call");
+  }
+}
+
+customElements.define("wxcc-last-contact-widget", WxccLastContactWidget);
