@@ -1,6 +1,7 @@
 /**
  * WxCC Last Contact Date Header Widget
- * Uses WxCC Desktop JS SDK via window.webexDesktop / agentx-js-api
+ * Receives data via properties passed from $STORE in the desktop layout JSON.
+ * No SDK polling needed - data is injected by the AgentX DynamicWidget renderer.
  */
 
 const template = document.createElement("template");
@@ -61,7 +62,7 @@ template.innerHTML = `
       color: #ffffff;
       white-space: nowrap;
     }
-    .lc-value.loading {
+    .lc-value.empty {
       color: rgba(255,255,255,0.4);
       font-style: italic;
     }
@@ -81,7 +82,7 @@ template.innerHTML = `
     </div>
     <div class="lc-content">
       <span class="lc-label">Last Contacted</span>
-      <span class="lc-value loading" id="lc-value">—</span>
+      <span class="lc-value empty" id="lc-value">—</span>
     </div>
   </div>
 `;
@@ -93,140 +94,36 @@ class WxccLastContactWidget extends HTMLElement {
     this.shadowRoot.appendChild(template.content.cloneNode(true));
     this._valueEl = this.shadowRoot.getElementById("lc-value");
     this._wrapperEl = this.shadowRoot.getElementById("lc-wrapper");
-    this._subscribed = false;
   }
 
-  connectedCallback() {
-    this._waitForSdk();
+  /**
+   * AgentX DynamicWidget sets properties defined in the layout JSON.
+   * We declare setters for each property we expect.
+   */
+
+  // Receives $STORE.agentContact.taskSelected.interaction
+  set interactionData(val) {
+    console.log("[WxccLastContactWidget] interactionData received:", JSON.stringify(val));
+    this._processInteraction(val);
   }
 
-  disconnectedCallback() {
-    // Clean up listeners
-    if (this._boundHandler) {
-      window.removeEventListener("agentx-js-api:task-changed", this._boundHandler);
-      window.removeEventListener("agentx-js-api:task-incoming", this._boundHandler);
-    }
-  }
-
-  _waitForSdk() {
-    const maxAttempts = 40;
-    let attempts = 0;
-
-    const poll = setInterval(() => {
-      attempts++;
-
-      // Try all known SDK entry points in WxCC
-      const sdk =
-        window["agentx-js-api"] ||
-        window.agentxJsApi ||
-        window.Desktop ||
-        window.webexDesktop;
-
-      if (sdk) {
-        clearInterval(poll);
-        console.log("[WxccLastContactWidget] SDK found:", Object.keys(sdk).join(", "));
-        this._subscribeViaSDK(sdk);
-        return;
-      }
-
-      // Fallback: listen for global WxCC custom events fired on window
-      if (attempts === 10) {
-        console.log("[WxccLastContactWidget] SDK not found yet, attaching window event listeners as fallback");
-        this._subscribeViaWindowEvents();
-      }
-
-      if (attempts >= maxAttempts) {
-        clearInterval(poll);
-        console.warn("[WxccLastContactWidget] SDK not available after max attempts. Relying on window events only.");
-      }
-    }, 500);
-  }
-
-  _subscribeViaSDK(sdk) {
-    try {
-      // WxCC JS API fires events via an 'agentContact' service
-      const agentContact = sdk.agentContact || sdk.AgentContact;
-
-      if (agentContact && typeof agentContact.addEventListener === "function") {
-        agentContact.addEventListener("eAgentContact", (detail) => {
-          console.log("[WxccLastContactWidget] eAgentContact event:", detail);
-          this._handleEvent(detail);
-        });
-        console.log("[WxccLastContactWidget] Subscribed via SDK agentContact");
-      } else {
-        console.warn("[WxccLastContactWidget] agentContact not found on SDK, falling back to window events");
-        this._subscribeViaWindowEvents();
-      }
-    } catch (err) {
-      console.error("[WxccLastContactWidget] SDK subscription error:", err);
-      this._subscribeViaWindowEvents();
-    }
-  }
-
-  _subscribeViaWindowEvents() {
-    if (this._subscribed) return;
-    this._subscribed = true;
-
-    // WxCC dispatches these custom events on the window object
-    const events = [
-      "agentContact:offered",
-      "agentContact:assigned",
-      "agentContact:ended",
-      "agentContact:wrapup",
-      "AgentContactOffered",
-      "AgentContactAssigned",
-      "eAgentContact",
-    ];
-
-    this._boundHandler = (e) => {
-      console.log("[WxccLastContactWidget] Window event:", e.type, e.detail);
-      this._handleEvent(e.detail || e);
-    };
-
-    events.forEach((evt) => {
-      window.addEventListener(evt, this._boundHandler);
-    });
-
-    // Also observe postMessage events from the AgentX iframe
-    window.addEventListener("message", (e) => {
-      if (e.data && e.data.type && e.data.type.toLowerCase().includes("agentcontact")) {
-        console.log("[WxccLastContactWidget] postMessage event:", e.data);
-        this._handleEvent(e.data);
-      }
-    });
-
-    console.log("[WxccLastContactWidget] Window event listeners attached");
-  }
-
-  _handleEvent(data) {
-    if (!data) return;
-
-    const type = data.type || data.eventType || "";
-    const interaction = data.interaction || data.data?.interaction || data;
-
-    if (
-      type.toLowerCase().includes("offered") ||
-      type.toLowerCase().includes("assigned") ||
-      type.toLowerCase().includes("ringing")
-    ) {
-      this._extractAndDisplay(interaction);
-    } else if (
-      type.toLowerCase().includes("ended") ||
-      type.toLowerCase().includes("wrapup") ||
-      type.toLowerCase().includes("wrapped")
-    ) {
+  // Receives $STORE.agentContact.isActiveCall
+  set isCallInProgress(val) {
+    console.log("[WxccLastContactWidget] isCallInProgress:", val);
+    if (!val) {
       this._clearDisplay();
-    } else {
-      // Unknown event type — try to extract anyway in case it has CAD data
-      this._extractAndDisplay(interaction);
     }
   }
 
-  _extractAndDisplay(interaction) {
-    if (!interaction) return;
+  _processInteraction(interaction) {
+    if (!interaction) {
+      this._clearDisplay();
+      return;
+    }
 
+    // CAD variables live in callAssociatedData
     const cad = interaction.callAssociatedData || interaction.CAD || {};
-    console.log("[WxccLastContactWidget] CAD data:", JSON.stringify(cad));
+    console.log("[WxccLastContactWidget] CAD keys:", Object.keys(cad));
 
     const raw =
       cad["lastContactDate"]?.value ||
@@ -234,7 +131,7 @@ class WxccLastContactWidget extends HTMLElement {
       cad["last_contact_date"]?.value ||
       null;
 
-    console.log("[WxccLastContactWidget] lastContactDate value:", raw);
+    console.log("[WxccLastContactWidget] lastContactDate:", raw);
 
     if (raw) {
       this._setDate(raw);
@@ -255,7 +152,6 @@ class WxccLastContactWidget extends HTMLElement {
         });
       }
     } catch (_) {}
-
     this._valueEl.textContent = display;
     this._valueEl.className = "lc-value highlight";
     this._wrapperEl.classList.remove("no-call");
@@ -263,13 +159,13 @@ class WxccLastContactWidget extends HTMLElement {
 
   _setNoData() {
     this._valueEl.textContent = "No data";
-    this._valueEl.className = "lc-value loading";
+    this._valueEl.className = "lc-value empty";
     this._wrapperEl.classList.remove("no-call");
   }
 
   _clearDisplay() {
     this._valueEl.textContent = "—";
-    this._valueEl.className = "lc-value loading";
+    this._valueEl.className = "lc-value empty";
     this._wrapperEl.classList.add("no-call");
   }
 }
